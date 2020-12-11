@@ -6,6 +6,11 @@ using Test
 import LibGit2
 using Random
 
+# we currently use system SSL/TLS on macOS and Windows platforms
+# and libgit2 cannot set the CA roots path on those systems
+# if that changes, this may need to be adjusted
+const CAN_SET_CA_ROOTS_PATH = !Sys.isapple() && !Sys.iswindows()
+
 function transfer_progress(progress::Ptr{LibGit2.TransferProgress}, payload::Dict)
     status = payload[:transfer_progress]
     progress = unsafe_load(progress)
@@ -87,6 +92,16 @@ mktempdir() do dir
                 @test ex.code == LibGit2.Error.EAUTH
             end
         end
+    end
+end
+
+if CAN_SET_CA_ROOTS_PATH
+    # needs to be run in separate process so it can re-initialize libgit2
+    # with a useless self-signed certificate authority root certificate
+    file = joinpath(@__DIR__, "bad_ca_roots.jl")
+    cmd = `$(Base.julia_cmd()) --depwarn=no --startup-file=no $file`
+    if !success(pipeline(cmd; stdout=stdout, stderr=stderr))
+        error("bad CA roots tests failed, cmd : $cmd")
     end
 end
 

@@ -4,11 +4,16 @@ module LibGit2Tests
 
 import LibGit2
 using Test
-using Random, Serialization, Sockets
+using Random, Serialization, Sockets, NetworkOptions
 
 const BASE_TEST_PATH = joinpath(Sys.BINDIR, "..", "share", "julia", "test")
 isdefined(Main, :FakePTYs) || @eval Main include(joinpath($(BASE_TEST_PATH), "testhelpers", "FakePTYs.jl"))
 import .Main.FakePTYs: with_fake_pty
+
+# we currently use system SSL/TLS on macOS and Windows platforms
+# and libgit2 cannot set the CA roots path on those systems
+# if that changes, this may need to be adjusted
+const CAN_SET_CA_ROOTS_PATH = !Sys.isapple() && !Sys.iswindows()
 
 function challenge_prompt(code::Expr, challenges; timeout::Integer=60, debug::Bool=true)
     input_code = tempname()
@@ -166,6 +171,28 @@ end
     f = LibGit2.features()
     @test findfirst(isequal(LibGit2.Consts.FEATURE_SSH), f) !== nothing
     @test findfirst(isequal(LibGit2.Consts.FEATURE_HTTPS), f) !== nothing
+end
+
+@testset "SSL/TLS initialization" begin
+    withenv("JULIA_SSL_CA_ROOTS_PATH" => nothing) do
+        # these fail for different reasons on different platforms:
+        # - on Apple & Windows you cannot set the CA roots path location
+        # - on Linux & FreeBSD you you can but these are invalid files
+        ENV["JULIA_SSL_CA_ROOTS_PATH"] = "/dev/null"
+        @test_throws LibGit2.GitError LibGit2.ensure_initialized()
+        ENV["JULIA_SSL_CA_ROOTS_PATH"] = tempname()
+        @test_throws LibGit2.GitError LibGit2.ensure_initialized()
+        # test that it still fails if called a second time
+        @test_throws LibGit2.GitError LibGit2.ensure_initialized()
+        if !CAN_SET_CA_ROOTS_PATH
+            # this would work on Linux & FreeBSD, but we don't want it
+            # see `ca_roots.jl` for tests that don't affect behavior
+            ENV["JULIA_SSL_CA_ROOTS_PATH"] = NetworkOptions.bundled_ca_roots()
+            @test_throws LibGit2.GitError LibGit2.ensure_initialized()
+        end
+    end
+    # should still be possible to initialize
+    @test LibGit2.ensure_initialized() === nothing
 end
 
 @testset "OID" begin
